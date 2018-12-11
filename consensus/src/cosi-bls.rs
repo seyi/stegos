@@ -113,6 +113,7 @@ fun handle_commit_message(session_id, muti_signature, signature_bitmap, from) {
     // check that from == current leader
     // check that session_id == digest(block_header) of prototype in waiting
     // check that census of bitmap >= BFT threshold
+    // check that multi-signature is correct
     // If so...
     //   sign response to commit message
     //   fill in block header multi-signature fields
