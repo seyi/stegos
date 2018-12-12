@@ -92,7 +92,7 @@ fn validate_transaction(trans: Transaction) -> Result<bool, Err> {
 }
 
 fn verify_utxo_in_block_body(trans: Transaction, block_body) -> Result<bool, Err> {
-    // this function shoud verify that the UTXO were faithfully copied over to the block body
+    // this function should verify that the UTXO were faithfully copied over to the block body
     // of the prototype block.
 }
 
