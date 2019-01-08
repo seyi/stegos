@@ -37,10 +37,10 @@ use stegos_crypto::pbc::secure::SecretKey as SecureSecretKey;
 use stegos_crypto::pbc::secure::Signature as SecureSignature;
 
 /// Infinity timeout.
-pub const INFINITY_TIMEOUT: u64 = 60u64 * 60 * 24 * 365 * 100;
+const INFINITY_TIMEOUT: u64 = 60u64 * 60 * 24 * 365 * 100;
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum ConsensusState {
+enum ConsensusState {
     /// Propose state.
     Propose,
     /// Prevote state.
@@ -54,6 +54,7 @@ pub enum ConsensusState {
 }
 
 impl ConsensusState {
+    /// Enum to string.
     fn name(&self) -> &'static str {
         match *self {
             ConsensusState::Propose => "Propose",
@@ -103,7 +104,7 @@ pub struct Consensus<Request, Proof> {
 
 impl<Request: Hashable + Clone + Debug, Proof: Hashable + Clone + Debug> Consensus<Request, Proof> {
     ///
-    /// Start a new consensus procedure.
+    /// Start a new consensus protocol.
     ///
     pub fn new(
         cfg: ConfigConsensus,
@@ -113,6 +114,7 @@ impl<Request: Hashable + Clone + Debug, Proof: Hashable + Clone + Debug> Consens
         leader: SecurePublicKey,
         validators: BTreeMap<SecurePublicKey, i64>,
     ) -> Self {
+        debug!("=> Propose");
         let state = ConsensusState::Propose;
         let deadline = Instant::now() + Duration::new(cfg.propose_timeout, 0);
         let prevote_accepts: BTreeMap<SecurePublicKey, SecureSignature> = BTreeMap::new();
@@ -144,12 +146,12 @@ impl<Request: Hashable + Clone + Debug, Proof: Hashable + Clone + Debug> Consens
     }
 
     ///
-    /// Move to the next round.
+    /// Reset current state and move to the next round.
     ///
     pub fn next_round(&mut self) {
-        assert!(self.state == ConsensusState::Commit || self.state == ConsensusState::Precommit);
-        self.state = ConsensusState::Propose;
+        debug!("=> Propose");
         self.round = self.round + 1;
+        self.state = ConsensusState::Propose;
         self.deadline = Instant::now() + Duration::new(self.cfg.propose_timeout, 0);
         self.prevote_accepts.clear();
         self.prevote_rejects.clear();
@@ -162,7 +164,7 @@ impl<Request: Hashable + Clone + Debug, Proof: Hashable + Clone + Debug> Consens
     }
 
     ///
-    /// Propose a new request with proof.
+    /// Propose a new request with a proof.
     ///
     pub fn propose(&mut self, request: Request, proof: Proof) {
         assert!(self.is_leader(), "only leader can propose");
@@ -184,6 +186,8 @@ impl<Request: Hashable + Clone + Debug, Proof: Hashable + Clone + Debug> Consens
         assert_eq!(&request_hash, &expected_request_hash);
         assert!(!self.prevote_accepts.contains_key(&self.pkey));
         assert!(!self.prevote_rejects.contains_key(&self.pkey));
+        assert!(!self.precommit_accepts.contains_key(&self.pkey));
+        assert!(!self.precommit_rejects.contains_key(&self.pkey));
         let body = ConsensusMessageBody::PrevoteAccept {};
         let msg = ConsensusMessage::new(self.round, request_hash, &self.skey, &self.pkey, body);
         self.outbox.push(msg.clone());
@@ -199,6 +203,8 @@ impl<Request: Hashable + Clone + Debug, Proof: Hashable + Clone + Debug> Consens
         assert_eq!(&request_hash, &expected_request_hash);
         assert!(!self.prevote_accepts.contains_key(&self.pkey));
         assert!(!self.prevote_rejects.contains_key(&self.pkey));
+        assert!(!self.precommit_accepts.contains_key(&self.pkey));
+        assert!(!self.precommit_rejects.contains_key(&self.pkey));
         let body = ConsensusMessageBody::PrevoteReject {};
         let msg = ConsensusMessage::new(self.round, request_hash, &self.skey, &self.pkey, body);
         self.outbox.push(msg.clone());
@@ -210,6 +216,11 @@ impl<Request: Hashable + Clone + Debug, Proof: Hashable + Clone + Debug> Consens
     ///
     fn precommit_accept(&mut self, request_hash: Hash) {
         debug!("PrecommitAccept: request={}", &request_hash);
+        let expected_request_hash = Hash::digest(self.request.as_ref().unwrap());
+        assert_eq!(&request_hash, &expected_request_hash);
+        assert!(!self.prevote_rejects.contains_key(&self.pkey));
+        assert!(!self.precommit_accepts.contains_key(&self.pkey));
+        assert!(!self.precommit_rejects.contains_key(&self.pkey));
         let request_hash_sig = secure_sign_hash(&request_hash, &self.skey);
         let body = ConsensusMessageBody::PrecommitAccept { request_hash_sig };
         let msg = ConsensusMessage::new(self.round, request_hash, &self.skey, &self.pkey, body);
@@ -222,6 +233,10 @@ impl<Request: Hashable + Clone + Debug, Proof: Hashable + Clone + Debug> Consens
     ///
     fn precommit_reject(&mut self, request_hash: Hash) {
         debug!("PrecommitReject: request={}", &request_hash);
+        let expected_request_hash = Hash::digest(self.request.as_ref().unwrap());
+        assert_eq!(&request_hash, &expected_request_hash);
+        assert!(!self.precommit_accepts.contains_key(&self.pkey));
+        assert!(!self.precommit_rejects.contains_key(&self.pkey));
         let body = ConsensusMessageBody::PrecommitReject {};
         let msg = ConsensusMessage::new(self.round, request_hash, &self.skey, &self.pkey, body);
         self.outbox.push(msg.clone());
@@ -235,12 +250,17 @@ impl<Request: Hashable + Clone + Debug, Proof: Hashable + Clone + Debug> Consens
         &mut self,
         msg: ConsensusMessage<Request, Proof>,
     ) -> Result<(), ConsensusError> {
-        debug!(
+        trace!(
             "Message: state={:?}, round={:?}, msg={:?}",
             self.state.name(),
             self.round,
             &msg
         );
+
+        // Discard all messages in Failure state.
+        if self.state == ConsensusState::Failure {
+            return Ok(());
+        }
 
         // Check sender.
         if !self.validators.contains_key(&msg.pkey) {
@@ -277,6 +297,12 @@ impl<Request: Hashable + Clone + Debug, Proof: Hashable + Clone + Debug> Consens
             self.inbox.push(msg);
             return Ok(());
         } else if self.round != msg.round {
+            warn!(
+                "Out of order message: state={:?}, round={:?}, msg={:?}",
+                self.state.name(),
+                self.round,
+                &msg
+            );
             return Err(ConsensusError::InvalidMessageRound(self.round, msg.round));
         }
 
@@ -284,6 +310,12 @@ impl<Request: Hashable + Clone + Debug, Proof: Hashable + Clone + Debug> Consens
         if self.state != ConsensusState::Propose {
             let expected_request_hash = Hash::digest(self.request.as_ref().unwrap());
             if expected_request_hash != msg.request_hash {
+                error!(
+                    "Message with invalid request_hash: state={:?}, round={:?}, msg={:?}",
+                    self.state.name(),
+                    self.round,
+                    &msg
+                );
                 return Err(ConsensusError::InvalidRequestHash(
                     expected_request_hash,
                     msg.request_hash,
@@ -303,29 +335,65 @@ impl<Request: Hashable + Clone + Debug, Proof: Hashable + Clone + Debug> Consens
             return Ok(());
         }
 
+        // Check valid transitions.
+        match (&msg.body, &self.state) {
+            // Obvious cases.
+            (ConsensusMessageBody::Proposal { .. }, ConsensusState::Propose) => {}
+            (ConsensusMessageBody::PrevoteAccept { .. }, ConsensusState::Prevote) => {}
+            (ConsensusMessageBody::PrevoteReject { .. }, ConsensusState::Prevote) => {}
+            (ConsensusMessageBody::PrecommitAccept { .. }, ConsensusState::Precommit) => {}
+            (ConsensusMessageBody::PrecommitReject { .. }, ConsensusState::Precommit) => {}
+
+            // Early pre-commits received in Prevote state.
+            (ConsensusMessageBody::PrecommitAccept { .. }, ConsensusState::Prevote) => {}
+            (ConsensusMessageBody::PrecommitReject { .. }, ConsensusState::Prevote) => {}
+
+            // Late pre-votes received in Precommit state.
+            (ConsensusMessageBody::PrevoteAccept { .. }, ConsensusState::Precommit) => {}
+            (ConsensusMessageBody::PrevoteReject { .. }, ConsensusState::Precommit) => {}
+
+            // Late pre-commits received in Commit state.
+            (ConsensusMessageBody::PrecommitAccept { .. }, ConsensusState::Commit) => {}
+            (ConsensusMessageBody::PrecommitReject { .. }, ConsensusState::Commit) => {}
+
+            // Early Prevotes and Precommits in Propose state
+            (_, ConsensusState::Propose) => {
+                self.inbox.push(msg);
+                return Ok(());
+            }
+
+            // Messages in Failure state.
+            (_, ConsensusState::Failure) => return Ok(()),
+
+            // Unsupported cases.
+            (_, _) => {
+                return Err(ConsensusError::InvalidMessage(
+                    self.state.name(),
+                    msg.name(),
+                ));
+            }
+        }
+
         // Process received message.
         match msg.body {
             ConsensusMessageBody::Proposal { request, proof } => {
-                // Check state.
-                if self.state != ConsensusState::Propose {
-                    return Err(ConsensusError::InvalidMessage(self.state.name(), "Propose"));
-                }
+                assert_eq!(self.state, ConsensusState::Propose);
 
-                // Check that message sent by leader.
+                // Check that message has been sent by leader.
                 if msg.pkey != self.leader {
+                    error!(
+                        "Proposal from non-leader: state={:?}, round={:?}, leader={:?}, from={:?}",
+                        self.state.name(),
+                        self.round,
+                        &self.leader,
+                        &msg.pkey
+                    );
                     return Err(ConsensusError::ProposalFromNonLeader(
                         msg.request_hash,
                         self.leader.clone(),
                         msg.pkey,
                     ));
                 }
-
-                assert!(self.prevote_accepts.is_empty());
-                assert!(self.prevote_rejects.is_empty());
-                assert!(self.precommit_accepts.is_empty());
-                assert!(self.precommit_rejects.is_empty());
-                assert!(self.request.is_none());
-                assert!(self.proof.is_none());
 
                 // Check request hash.
                 let expected_request_hash = Hash::digest(&request);
@@ -337,36 +405,27 @@ impl<Request: Hashable + Clone + Debug, Proof: Hashable + Clone + Debug> Consens
                     ));
                 }
 
-                // Move to WaitPrevote
+                // Move to Prevote
+                debug!("Propose => Prevote");
+                assert!(self.prevote_accepts.is_empty());
+                assert!(self.prevote_rejects.is_empty());
+                assert!(self.precommit_accepts.is_empty());
+                assert!(self.precommit_rejects.is_empty());
+                assert!(self.request.is_none());
+                assert!(self.proof.is_none());
                 self.request = Some(request);
                 self.proof = Some(proof);
                 self.state = ConsensusState::Prevote;
                 self.deadline = Instant::now() + Duration::new(self.cfg.prevote_timeout, 0);
                 self.process_inbox();
-
-                Ok(())
             }
             ConsensusMessageBody::PrevoteAccept {} => {
-                // Check state.
-                if self.state == ConsensusState::Precommit {
-                    debug!(
-                        "A late message: state={:?}, round={:?}, msg={:?}",
-                        self.state.name(),
-                        self.round,
-                        &msg
-                    );
-                    // Silently discard this message.
-                    return Ok(());
-                } else if self.state != ConsensusState::Prevote {
-                    return Err(ConsensusError::InvalidMessage(
-                        self.state.name(),
-                        msg.name(),
-                    ));
-                }
+                assert_ne!(self.state, ConsensusState::Propose);
+                assert_ne!(self.state, ConsensusState::Failure);
 
                 // Check previous vote.
                 if self.prevote_rejects.contains_key(&msg.pkey) {
-                    warn!(
+                    error!(
                         "Attempt to change vote: state={:?}, round={:?}, msg={:?}",
                         self.state.name(),
                         self.round,
@@ -377,29 +436,10 @@ impl<Request: Hashable + Clone + Debug, Proof: Hashable + Clone + Debug> Consens
 
                 // Add vote.
                 self.prevote_accepts.insert(msg.pkey, msg.sig);
-
-                // Check supermajority.
-                self.check_prevote_supermajority();
-
-                Ok(())
             }
             ConsensusMessageBody::PrevoteReject {} => {
-                // Check state.
-                if self.state == ConsensusState::Precommit {
-                    debug!(
-                        "A late message: state={:?}, round={:?}, msg={:?}",
-                        self.state.name(),
-                        self.round,
-                        &msg
-                    );
-                    // Silently discard this message.
-                    return Ok(());
-                } else if self.state != ConsensusState::Prevote {
-                    return Err(ConsensusError::InvalidMessage(
-                        self.state.name(),
-                        msg.name(),
-                    ));
-                }
+                assert_ne!(self.state, ConsensusState::Propose);
+                assert_ne!(self.state, ConsensusState::Failure);
 
                 // Check previous vote.
                 if self.prevote_accepts.contains_key(&msg.pkey) {
@@ -414,75 +454,55 @@ impl<Request: Hashable + Clone + Debug, Proof: Hashable + Clone + Debug> Consens
 
                 // Add vote.
                 self.prevote_rejects.insert(msg.pkey, msg.sig);
-
-                // Check supermajority.
-                self.check_prevote_supermajority();
-
-                Ok(())
             }
             ConsensusMessageBody::PrecommitAccept { request_hash_sig } => {
-                // Check state.
-                if self.state != ConsensusState::Prevote && self.state != ConsensusState::Precommit
-                {
-                    return Err(ConsensusError::InvalidMessage(
-                        self.state.name(),
-                        msg.name(),
-                    ));
-                }
+                assert_ne!(self.state, ConsensusState::Propose);
+                assert_ne!(self.state, ConsensusState::Failure);
 
                 // Check previous vote.
                 if self.prevote_rejects.contains_key(&msg.pkey)
                     || self.precommit_rejects.contains_key(&msg.pkey)
                 {
+                    warn!(
+                        "Attempt to change vote: state={:?}, round={:?}, msg={:?}",
+                        self.state.name(),
+                        self.round,
+                        &msg
+                    );
                     return Err(ConsensusError::VoteChange(false, msg.pkey, msg.sig));
                 }
 
                 // Add vote.
                 self.precommit_accepts.insert(msg.pkey, request_hash_sig);
-
-                // Check supermajority.
-                self.check_precommit_supermajority();
-
-                Ok(())
             }
             ConsensusMessageBody::PrecommitReject {} => {
-                // Check state.
-                if self.state != ConsensusState::Prevote && self.state != ConsensusState::Precommit
-                {
-                    return Err(ConsensusError::InvalidMessage(
-                        self.state.name(),
-                        "PrecommitReject",
-                    ));
-                }
+                assert_ne!(self.state, ConsensusState::Propose);
+                assert_ne!(self.state, ConsensusState::Failure);
 
                 // Check previous vote.
                 if self.precommit_accepts.contains_key(&msg.pkey) {
+                    warn!(
+                        "Attempt to change vote: state={:?}, round={:?}, msg={:?}",
+                        self.state.name(),
+                        self.round,
+                        &msg
+                    );
                     return Err(ConsensusError::VoteChange(false, msg.pkey, msg.sig));
                 }
 
                 // Add vote.
                 self.precommit_rejects.insert(msg.pkey, msg.sig);
-
-                // Check supermajority.
-                self.check_precommit_supermajority();
-
-                Ok(())
             }
         }
-    }
 
-    fn process_inbox(&mut self) {
-        let inbox = std::mem::replace(&mut self.inbox, Vec::new());
-        for msg in inbox {
-            if let Err(e) = self.feed_message(msg) {
-                warn!(
-                    "Failed to process msg: state={:?}, round={:?}, error={:?}",
-                    self.state.name(),
-                    self.round,
-                    e
-                );
-            }
+        // Check supermajority.
+        if self.state == ConsensusState::Prevote {
+            self.check_prevote_supermajority();
+        } else if self.state == ConsensusState::Precommit {
+            self.check_precommit_supermajority();
         }
+
+        Ok(())
     }
 
     pub fn feed_timer(&mut self) -> Result<(), ConsensusError> {
@@ -512,7 +532,29 @@ impl<Request: Hashable + Clone + Debug, Proof: Hashable + Clone + Debug> Consens
             ConsensusState::Failure => {}
         }
 
+        // Check supermajority.
+        if self.state == ConsensusState::Prevote {
+            self.check_prevote_supermajority();
+        } else if self.state == ConsensusState::Precommit {
+            self.check_precommit_supermajority();
+        }
+
         Ok(())
+    }
+
+    /// Process pending messages received out-of-order.
+    fn process_inbox(&mut self) {
+        let inbox = std::mem::replace(&mut self.inbox, Vec::new());
+        for msg in inbox {
+            if let Err(e) = self.feed_message(msg) {
+                warn!(
+                    "Failed to process msg: state={:?}, round={:?}, error={:?}",
+                    self.state.name(),
+                    self.round,
+                    e
+                );
+            }
+        }
     }
 
     /// Returns true if current node is leader.
@@ -568,9 +610,13 @@ impl<Request: Hashable + Clone + Debug, Proof: Hashable + Clone + Debug> Consens
         accepts: &BTreeMap<SecurePublicKey, SecureSignature>,
         rejects: &BTreeMap<SecurePublicKey, SecureSignature>,
     ) -> Option<bool> {
+        trace!("check_supermajority: state={:?}, has_accepts={:?}, has_rejects={:?}, total={:?}",
+               self.state.name(), accepts.len(), rejects.len(), self.validators.len());
         if check_supermajority(accepts.len(), self.validators.len()) {
+            trace!("has supermajority for accepts");
             return Some(true);
         } else if check_supermajority(rejects.len(), self.validators.len()) {
+            trace!("has supermajority for rejects");
             return Some(false);
         } else {
             return None;
@@ -579,6 +625,7 @@ impl<Request: Hashable + Clone + Debug, Proof: Hashable + Clone + Debug> Consens
 
     /// Check if supermajority of Prevote has been collected.
     fn check_prevote_supermajority(&mut self) {
+        assert_eq!(self.state, ConsensusState::Prevote);
         match self.check_supermajority(&self.prevote_accepts, &self.prevote_rejects) {
             // Supermajority of PrevoteAccept votes.
             Some(true) => {
@@ -615,6 +662,7 @@ impl<Request: Hashable + Clone + Debug, Proof: Hashable + Clone + Debug> Consens
 
     /// Check if supermajority of Precommit has been collected.
     fn check_precommit_supermajority(&mut self) {
+        assert_eq!(self.state, ConsensusState::Precommit);
         match self.check_supermajority(&self.precommit_accepts, &self.precommit_rejects) {
             // Supermajority of PrecommitAccept votes.
             Some(true) => {
