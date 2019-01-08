@@ -36,7 +36,7 @@ use stegos_crypto::pbc::secure::G2;
 ///
 pub(crate) fn check_supermajority(got_votes: usize, total_votes: usize) -> bool {
     assert!(got_votes <= total_votes);
-    let need_votes = (total_votes * 2 + 3) / 3 + 1;
+    let need_votes = (total_votes * 2 + 3) / 3;
     (got_votes >= need_votes)
 }
 
