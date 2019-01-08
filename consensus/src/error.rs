@@ -1,4 +1,4 @@
-//! Blockchain Errors.
+//! pBFT Consensus - Errors.
 
 //
 // Copyright (c) 2018 Stegos
@@ -22,9 +22,39 @@
 // SOFTWARE.
 
 use failure::Fail;
+use stegos_crypto::hash::Hash;
+use stegos_crypto::pbc::secure::PublicKey as SecurePublicKey;
+use stegos_crypto::pbc::secure::Signature as SecureSignature;
 
 #[derive(Debug, Fail)]
 pub enum ConsensusError {
+    #[fail(display = "Unknown peer: pkey={}", _0)]
+    UnknownMessagePeer(SecurePublicKey),
+    #[fail(display = "Invalid round: expected={}, got={}", _0, _1)]
+    InvalidMessageRound(u64, u64),
     #[fail(display = "Invalid message signature.")]
     InvalidMessageSignature,
+
+    #[fail(
+        display = "Invalid request hash: expected={}, got={}, pkey={}.",
+        _0, _1, _2
+    )]
+    InvalidRequestHash(Hash, Hash, SecurePublicKey),
+    #[fail(display = "Invalid message: state={} msg={}.", _0, _1)]
+    InvalidMessage(&'static str, &'static str),
+
+    #[fail(
+        display = "Proposal from non-leader: request_hash={}, expected={}, got={}",
+        _0, _1, _2
+    )]
+    ProposalFromNonLeader(Hash, SecurePublicKey, SecurePublicKey),
+
+    #[fail(display = "Invalid value on commit: expected={}, got={}", _0, _1)]
+    InvalidValueOnCommit(Hash, Hash),
+
+    #[fail(
+        display = "Attempt to change vote: from={}, pkey={}, sig={}",
+        _0, _1, _2
+    )]
+    VoteChange(bool, SecurePublicKey, SecureSignature),
 }

@@ -41,6 +41,8 @@ pub struct Config {
     pub network: ConfigNetwork,
     /// Key Chain configuration.
     pub keychain: ConfigKeyChain,
+    /// Consensus.
+    pub consensus: ConfigConsensus,
 }
 
 /// Default values for global configuration.
@@ -50,6 +52,7 @@ impl Default for Config {
             general: Default::default(),
             network: Default::default(),
             keychain: Default::default(),
+            consensus: Default::default(),
         }
     }
 }
@@ -135,6 +138,28 @@ impl Default for ConfigNetwork {
             max_connections: 32,
             monitoring_interval: 5,
             heartbeat_interval: 30,
+        }
+    }
+}
+
+/// Consensus Configuration.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(default)]
+pub struct ConfigConsensus {
+    /// Timeout for Propose stage.
+    pub propose_timeout: u64,
+    /// Timeout for Precommit stage.
+    pub prevote_timeout: u64,
+    /// Timeout for Precommit stage.
+    pub precommit_timeout: u64,
+}
+
+impl Default for ConfigConsensus {
+    fn default() -> Self {
+        ConfigConsensus {
+            propose_timeout: 60,
+            prevote_timeout: 60,
+            precommit_timeout: 60,
         }
     }
 }
