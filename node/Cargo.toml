@@ -29,9 +29,16 @@ clap = "2.32"
 bitvector = "0.1"
 linked-hash-map = "0.5"
 
+[dev-dependencies]
+criterion = "0.2"
+
 [build-dependencies]
 protobuf-codegen-pure = "2.2"
 
 [[bin]]
 name = "bootstrap"
 path = "src/bootstrap.rs"
+
+[[bench]]
+name = "election"
+harness = false
